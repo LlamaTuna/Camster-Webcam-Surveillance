@@ -4,18 +4,94 @@
 {% block title %}Face Gallery{% endblock %}
 
 {% block content %}
-    <h1>Face Gallery</h1>
+<h1>Face Gallery</h1>
 
-    <form method="POST" action="{% url 'delete_all_faces' %}" onsubmit="return confirm('Are you sure you want to delete all images? This action cannot be undone.');">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-danger">Delete All Images</button>
-    </form>
-    <div class="gallery">
-        {% for face in faces %}
-        <div class="gallery-item">
-            <img src="{{ face.image.url }}" alt="{{ face.name }}">
-            <a href="{% url 'tag_face' face.id %}" class="tag-button">Tag Face</a>
-        </div>
-        {% endfor %}
+<!-- Filter Tabs -->
+<div class="d-flex align-items-center mb-3" style="gap: 10px;">
+    <div class="btn-group" role="group" aria-label="Filter faces">
+        <a href="?filter=all"
+            class="btn btn-sm {% if current_filter == 'all' %}btn-primary{% else %}btn-outline-secondary{% endif %}">
+            All <span class="badge badge-light ml-1">{{ total_count }}</span>
+        </a>
+        <a href="?filter=tagged"
+            class="btn btn-sm {% if current_filter == 'tagged' %}btn-success{% else %}btn-outline-secondary{% endif %}">
+            Tagged <span class="badge badge-light ml-1">{{ tagged_count }}</span>
+        </a>
+        <a href="?filter=untagged"
+            class="btn btn-sm {% if current_filter == 'untagged' %}btn-warning{% else %}btn-outline-secondary{% endif %}">
+            Untagged <span class="badge badge-light ml-1">{{ untagged_count }}</span>
+        </a>
     </div>
+
+    <span class="text-muted ml-auto" style="font-size: 0.85em;">
+        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+    </span>
+
+    {% if current_filter != 'tagged' %}
+    <form method="POST" action="{% url 'delete_all_faces' %}"
+        onsubmit="return confirm('Are you sure you want to delete all untagged images? This action cannot be undone.');"
+        class="ml-2">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger btn-sm">Delete All Untagged</button>
+    </form>
+    {% endif %}
+</div>
+
+<!-- Face Gallery Grid -->
+<div class="gallery">
+    {% for face in faces %}
+    <div class="gallery-item">
+        <img src="{{ face.image.url }}" alt="{{ face.name }}">
+        <div class="gallery-item-info">
+            <span class="face-name">{{ face.name }}</span>
+        </div>
+        {% if not face.tagged %}
+        <a href="{% url 'tag_face' face.id %}" class="tag-button">Tag Face</a>
+        {% else %}
+        <span class="tag-button" style="background-color: rgba(40, 167, 69, 0.7);">✓ Tagged</span>
+        {% endif %}
+    </div>
+    {% empty %}
+    <p class="text-muted">No faces found for this filter.</p>
+    {% endfor %}
+</div>
+
+<!-- Pagination Controls -->
+{% if page_obj.has_other_pages %}
+<nav aria-label="Face gallery pagination" class="mt-4">
+    <ul class="pagination justify-content-center">
+        {% if page_obj.has_previous %}
+        <li class="page-item">
+            <a class="page-link" href="?filter={{ current_filter }}&page={{ page_obj.previous_page_number }}"
+                style="background-color: #333; border-color: #555; color: #e0e0e0;">
+                &laquo; Previous
+            </a>
+        </li>
+        {% endif %}
+
+        {% for num in page_obj.paginator.page_range %}
+        {% if page_obj.number == num %}
+        <li class="page-item active">
+            <span class="page-link" style="background-color: #007bff; border-color: #007bff;">{{ num }}</span>
+        </li>
+        {% elif num > page_obj.number|add:"-3" and num < page_obj.number|add:"3" %} <li class="page-item">
+            <a class="page-link" href="?filter={{ current_filter }}&page={{ num }}"
+                style="background-color: #333; border-color: #555; color: #e0e0e0;">
+                {{ num }}
+            </a>
+            </li>
+            {% endif %}
+            {% endfor %}
+
+            {% if page_obj.has_next %}
+            <li class="page-item">
+                <a class="page-link" href="?filter={{ current_filter }}&page={{ page_obj.next_page_number }}"
+                    style="background-color: #333; border-color: #555; color: #e0e0e0;">
+                    Next &raquo;
+                </a>
+            </li>
+            {% endif %}
+    </ul>
+</nav>
+{% endif %}
 {% endblock %}

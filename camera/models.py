@@ -2,6 +2,7 @@
 from django.contrib.auth.models import AbstractUser, Group, Permission, User
 from django.db import models
 from django.conf import settings
+from .encryption import EncryptedCharField
 
 class CustomUser(AbstractUser):
     """
@@ -64,11 +65,13 @@ class Face(models.Model):
         timestamp (DateTimeField): The timestamp when the face was recorded, automatically set.
         image (ImageField): The image file associated with the face, uploaded to the 'faces_seen/' directory.
         tagged (BooleanField): A boolean indicating whether the face has been tagged, with a default value of False.
+        embedding (BinaryField): The 512-dimensional FaceNet embedding stored as binary, for face matching.
     """
     name = models.CharField(max_length=100)
     timestamp = models.DateTimeField(auto_now_add=True)
     image = models.ImageField(upload_to='faces_seen/')
     tagged = models.BooleanField(default=False)
+    embedding = models.BinaryField(null=True, blank=True, help_text="512-dim FaceNet embedding")
 
 class EmailSettings(models.Model):
     """
@@ -87,7 +90,7 @@ class EmailSettings(models.Model):
     smtp_server = models.CharField(max_length=100)
     smtp_port = models.IntegerField()
     smtp_user = models.CharField(max_length=100)
-    smtp_password = models.CharField(max_length=100)
+    smtp_password = EncryptedCharField(max_length=500)
 
 class AudioDeviceSetting(models.Model):
     """
@@ -104,3 +107,30 @@ class AudioDeviceSetting(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.device_path} - {self.audio_device}"
+
+
+class RecognitionSettings(models.Model):
+    """
+    Model representing face recognition settings.
+    
+    Attributes:
+        similarity_threshold (FloatField): Cosine similarity threshold for face recognition (0.0-1.0).
+            Higher values require closer matches. Default is 0.6.
+    """
+    similarity_threshold = models.FloatField(
+        default=0.6,
+        help_text="Cosine similarity threshold for face recognition (0.0-1.0). Higher = stricter matching."
+    )
+    
+    class Meta:
+        verbose_name = "Recognition Settings"
+        verbose_name_plural = "Recognition Settings"
+    
+    def __str__(self):
+        return f"Recognition Settings (threshold: {self.similarity_threshold})"
+    
+    @classmethod
+    def get_settings(cls):
+        """Get or create the singleton settings instance."""
+        settings_obj, _ = cls.objects.get_or_create(pk=1)
+        return settings_obj

@@ -105,6 +105,7 @@ class VideoCamera:
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.executor.submit(self._process_frames)
 
+        self.async_executor = ThreadPoolExecutor(max_workers=2)  # For classification and API calls
         self.email_executor = ThreadPoolExecutor(max_workers=1)  # Executor for email sending
 
         self.save_timer = threading.Timer(60, self.save_running_buffer_clip)
@@ -133,6 +134,8 @@ class VideoCamera:
             self.save_timer.cancel()
         if hasattr(self, 'executor'):
             self.executor.shutdown(wait=False)
+        if hasattr(self, 'async_executor'):
+            self.async_executor.shutdown(wait=False)
         if hasattr(self, 'email_executor'):
             self.email_executor.shutdown(wait=False)
         if hasattr(self, 'pulse_manager') and self.pulse_manager:
@@ -169,24 +172,50 @@ class VideoCamera:
             self.running_buffer.append(image.copy())
 
             # Only classify objects if movement is detected
-            self.dashboard_api.send_log("movement", "Movement detected", extra_data={"movement_box": movement_box})
+            try:
+                self.async_executor.submit(self.dashboard_api.send_log, "movement", "Movement detected", {"movement_box": movement_box})
+            except RuntimeError:
+                pass  # Executor shut down
             self.classification_counter += 1
             if self.classification_counter >= self.classification_interval:
-                object_label = self.object_classifier.classify_object(image)  # Use ObjectClassifier
                 self.classification_counter = 0
-                cv2.putText(image, object_label, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
-                print(f"{object_label} seen in the frame")
-
-                # Log the object classification event
-                self.dashboard_api.send_log("classification", f"{object_label} seen in the frame")
-
-                self.send_email.log_event(f"{object_label} seen in the frame")
+                # Run classification asynchronously to not block the stream
+                try:
+                    if not hasattr(self, '_classification_running'):
+                        self._classification_running = False
+                        self._last_classification = None
+                    
+                    if not self._classification_running:
+                        self._classification_running = True
+                        def run_classification(img):
+                            try:
+                                result = self.object_classifier.classify_object(img)
+                                self._last_classification = result
+                                print(f"{result} seen in the frame")
+                                self.dashboard_api.send_log("classification", f"{result} seen in the frame")
+                                self.send_email.log_event(f"{result} seen in the frame")
+                            except Exception as e:
+                                print(f"Classification error: {e}")
+                            finally:
+                                self._classification_running = False
+                        
+                        self.async_executor.submit(run_classification, image.copy())
+                except RuntimeError:
+                    pass  # Executor shut down
+            
+            # Display last classification result if available
+            if hasattr(self, '_last_classification') and self._last_classification:
+                cv2.putText(image, self._last_classification, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
 
             # Attempt to send email snapshot
             if time.time() - self.last_alert_time >= self.alert_interval:
                 self.send_email.log_event("Movement detected")
                 self.send_email.frame_buffer = self.frame_buffer.copy()
-                self.email_executor.submit(self.send_email.send_email_snapshot)  # Send email asynchronously
+                try:
+                    self.email_executor.submit(self.send_email.send_email_snapshot)  # Send email asynchronously
+                except RuntimeError:
+                    # Executor was shut down (e.g., during server reload), skip email
+                    pass
                 print("Email sent from VC class")
                 self.last_alert_time = time.time()
 
@@ -243,6 +272,13 @@ class VideoCamera:
         Saves the frames in the running buffer as a video clip, captures audio, generates a thumbnail,
         and sends the clip and thumbnail to the dashboard API and via email.
         """
+        # Skip save if buffer has too few frames (prevents empty/corrupt clips)
+        if len(self.running_buffer) < 5:
+            print(f"Skipping clip save: buffer has only {len(self.running_buffer)} frames")
+            self.save_timer = threading.Timer(60, self.save_running_buffer_clip)
+            self.save_timer.start()
+            return
+
         # Directories for saving clips and thumbnails
         event_clips_dir = os.path.join(settings.MEDIA_ROOT, 'event_clips')
         thumbnails_dir = os.path.join(settings.MEDIA_ROOT, 'thumbnails')
@@ -303,6 +339,7 @@ class VideoCamera:
 
         command.extend([
             '-t', str(duration_seconds),  # Specify the duration of the video
+            '-movflags', '+faststart',  # Move moov atom to front for native player compatibility
             '-f', 'mp4',  # Specify MP4 as the output format
             video_file_path  # Output video file path
         ])
@@ -372,7 +409,7 @@ class VideoCamera:
         self.save_timer.start()
 
 
-    def generate_thumbnail(self, video_path, thumbnail_path, time="00:00:05"):
+    def generate_thumbnail(self, video_path, thumbnail_path, time="00:00:00"):
         """
         Generates a thumbnail image from the video at the specified time.
 

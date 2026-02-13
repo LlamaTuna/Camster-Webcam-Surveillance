@@ -69,11 +69,14 @@ class SendEmail:
             print("Alert buffer is empty, no email will be sent.")
             return
         try:
-            if self.request:
+            if self.request and hasattr(self.request, 'user') and self.request.user.is_authenticated:
                 email_settings = EmailSettings.objects.get(user=self.request.user)
             else:
-                print("Request object is not available.")
-                return
+                # Fallback: use the first available EmailSettings when user is not authenticated
+                email_settings = EmailSettings.objects.first()
+                if not email_settings:
+                    print("No email settings configured. Skipping email.")
+                    return
 
             print(f"Email Settings: {email_settings.__dict__}")  # Debug statement
 

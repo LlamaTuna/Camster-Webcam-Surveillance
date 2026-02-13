@@ -39,11 +39,11 @@ class DashboardAPIHandler:
             payload['extra_data'] = extra_data
 
         try:
-            response = requests.post(f"{self.api_url}/log_event/", json=payload)
+            response = requests.post(f"{self.api_url}/log_event/", json=payload, timeout=1)
             response.raise_for_status()
             # print("Log sent successfully")
         except requests.exceptions.RequestException as e:
-            print(f"Failed to send log: {e}")
+            pass  # Silently fail - don't print to avoid log spam
 
     def send_image(self, image, description="Image uploaded"):
         """

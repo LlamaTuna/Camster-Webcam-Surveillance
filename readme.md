@@ -15,10 +15,11 @@ Camster is an advanced video surveillance application that leverages machine lea
 
 ### Prerequisites
 
-- Python 3.8.12+
+- Python 3.12+
 - Django 4.2+
 - OpenCV 4.x
-- TensorFlow 2.x
+- PyTorch 2.x (with CUDA support optional)
+- facenet-pytorch (for face detection and recognition)
 - FFmpeg (for video processing)
 
 ### Setup

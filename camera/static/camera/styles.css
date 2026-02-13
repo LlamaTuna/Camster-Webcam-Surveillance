@@ -149,3 +149,35 @@ textarea {
     background-color: #333 !important; /* Darker hover background */
     color: #ffffff !important; /* Brighter text color on hover */
 }
+
+/* Face gallery info overlay */
+.gallery-item-info {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 5px 8px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+}
+
+.face-name {
+    color: #e0e0e0;
+    font-size: 0.75em;
+    font-weight: 500;
+}
+
+/* Filter and pagination badge styles */
+.badge-light {
+    background-color: rgba(255,255,255,0.2) !important;
+    color: #fff !important;
+}
+
+.btn-outline-secondary {
+    border-color: #555 !important;
+    color: #aaa !important;
+}
+
+.btn-outline-secondary:hover {
+    background-color: #333 !important;
+    color: #fff !important;
+}

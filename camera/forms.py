@@ -1,7 +1,7 @@
 from django import forms
 from .models import Face
 from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
-from .models import CustomUser, EmailSettings, User, AudioDeviceSetting
+from .models import CustomUser, EmailSettings, User, AudioDeviceSetting, RecognitionSettings
 import sounddevice as sd
 
 class CustomUserCreationForm(UserCreationForm):
@@ -61,6 +61,9 @@ class EmailSettingsForm(forms.ModelForm):
     class Meta:
         model = EmailSettings
         fields = ['smtp_server', 'smtp_port', 'smtp_user', 'smtp_password', 'email']
+        widgets = {
+            'smtp_password': forms.PasswordInput(attrs={'placeholder': '●●●●●●●●'}),
+        }
 
 class UserSettingsForm(forms.ModelForm):
     """
@@ -92,3 +95,23 @@ class AudioDeviceSettingForm(forms.ModelForm):
     class Meta:
         model = AudioDeviceSetting
         fields = ['camera_index', 'audio_device']
+
+
+class RecognitionSettingsForm(forms.ModelForm):
+    """
+    A form for configuring face recognition settings, including similarity threshold.
+    """
+    similarity_threshold = forms.FloatField(
+        min_value=0.0,
+        max_value=1.0,
+        widget=forms.NumberInput(attrs={
+            'step': '0.05',
+            'class': 'form-control',
+            'style': 'width: 200px;'
+        }),
+        help_text='Cosine similarity threshold (0.0-1.0). Higher = stricter matching. Recommended: 0.5-0.7'
+    )
+    
+    class Meta:
+        model = RecognitionSettings
+        fields = ['similarity_threshold']

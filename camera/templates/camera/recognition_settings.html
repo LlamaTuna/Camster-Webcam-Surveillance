@@ -1,0 +1,40 @@
+<!-- camera_app/templates/camera/recognition_settings.html -->
+
+{% extends "base.html" %}
+
+{% block title %}Recognition Settings{% endblock %}
+
+{% block content %}
+  <h2>Face Recognition Settings</h2>
+  
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Similarity Threshold</h5>
+      <p class="card-text text-muted">
+        This controls how strictly faces are matched. A <strong>lower value</strong> (e.g., 0.4) will match more faces but may have false positives.
+        A <strong>higher value</strong> (e.g., 0.7) will be more strict but may miss matches.
+      </p>
+      
+      <form method="post">
+        {% csrf_token %}
+        <div class="mb-3">
+          <label for="id_similarity_threshold" class="form-label">Similarity Threshold</label>
+          {{ form.similarity_threshold }}
+          <small class="form-text text-muted">{{ form.similarity_threshold.help_text }}</small>
+        </div>
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </form>
+    </div>
+  </div>
+  
+  <div class="card">
+    <div class="card-body">
+      <h5 class="card-title">Known Faces</h5>
+      <p class="card-text">
+        Currently tracking <strong>{{ known_faces_count }}</strong> tagged face(s).
+      </p>
+      <a href="{% url 'list_faces' %}" class="btn btn-secondary">Manage Faces</a>
+      <a href="{% url 'upload_face' %}" class="btn btn-outline-primary">Upload New Face</a>
+    </div>
+  </div>
+{% endblock %}

@@ -6,7 +6,6 @@ from .models import Face
 import threading
 from datetime import datetime
 from django.http import JsonResponse
-import onnxruntime as ort
 
 logger = logging.getLogger(__name__)
 
@@ -62,30 +61,3 @@ def get_logs(request):
         log_data = logs[-100:]  # Get the last 100 log entries
     print("Fetching logs:", log_data)  # Debug statement
     return JsonResponse({'logs': log_data})
-
-
-def load_yolov7_tiny_onnx_model():
-    """
-    Load the YOLOv7-tiny ONNX model from the specified path in Django settings.
-
-    Returns:
-        ort.InferenceSession: The loaded ONNX model session.
-    
-    Raises:
-        ValueError: If the model fails to load.
-    """
-    # Use Django settings to locate the model file
-    onnx_path = os.path.join(settings.MODEL_DIR, 'yolo/yolov7-tiny.onnx')
-
-    try:
-        print(f"Loading YOLOv7-tiny ONNX model from: {onnx_path}")
-        session = ort.InferenceSession(onnx_path)
-        print("YOLOv7-tiny ONNX model loaded successfully")
-    except Exception as e:
-        print(f"Error loading YOLOv7-tiny ONNX model: {e}")
-        session = None
-
-    if session is None:
-        raise ValueError("Failed to load YOLOv7-tiny ONNX model")
-
-    return session

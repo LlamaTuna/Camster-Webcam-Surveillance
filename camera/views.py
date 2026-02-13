@@ -1,5 +1,6 @@
 import threading
 from django.http import StreamingHttpResponse, JsonResponse, HttpResponse
+from django.core.paginator import Paginator
 from django.shortcuts import render, redirect
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
@@ -9,7 +10,7 @@ from .models import Face, Event
 from .forms import TagFaceForm, CustomUserCreationForm, UploadFaceForm
 import cv2
 import numpy as np
-from mtcnn.mtcnn import MTCNN
+from facenet_pytorch import MTCNN
 from scipy.spatial.distance import euclidean
 import os
 import smtplib
@@ -22,8 +23,8 @@ from .utils import reconcile_faces
 import pytz
 import logging
 from .video_camera import VideoCamera
-from .forms import EmailSettingsForm, UserSettingsForm
-from .models import EmailSettings
+from .forms import EmailSettingsForm, UserSettingsForm, RecognitionSettingsForm
+from .models import EmailSettings, RecognitionSettings
 from urllib.parse import unquote
 from django.core.cache import cache
 from rest_framework.decorators import api_view
@@ -34,19 +35,10 @@ from .forms import AudioDeviceSettingForm
 from .models import AudioDeviceSetting
 
 import sys
+import torch
+from .device_utils import get_device
 
 camera_instances = []
-
-# Check if the script is running a management command
-is_management_command = len(sys.argv) > 1 and sys.argv[1] in ['makemigrations', 'migrate', 'createsuperuser', 'collectstatic']
-
-if not is_management_command:
-    import tensorflow as tf
-    from tensorflow.keras.preprocessing import image
-    from tensorflow.keras.applications.resnet50 import preprocess_input, ResNet50
-    from tensorflow.keras.models import Model
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 log_lock = threading.Lock()
 logs = []
@@ -87,6 +79,20 @@ def list_cameras(max_cameras=4):
     return camera_devices
 
 list_cameras()
+
+def reload_all_known_faces():
+    """
+    Reloads known faces in all active camera instances.
+    Called after tagging a new face to update recognition immediately.
+    """
+    global camera_instances
+    for camera in camera_instances:
+        try:
+            if hasattr(camera, 'facial_recognition'):
+                camera.facial_recognition.reload_known_faces()
+                print(f"Reloaded known faces for camera {camera.camera_index}")
+        except Exception as e:
+            print(f"Error reloading known faces: {e}")
 
 def log_event(event):
     """
@@ -170,11 +176,15 @@ def gen(camera):
     Yields:
         bytes: JPEG-encoded frame.
     """
+    import time
     while True:
         frame = camera.get_frame()
         if frame:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n\r\n')
+        else:
+            # Small sleep to prevent tight loop when frame skipping
+            time.sleep(0.01)
 
 def video_feed(request, device_path):
     """
@@ -193,13 +203,22 @@ def video_feed(request, device_path):
     normalized_device_path = f"/dev/{device_path.split('/')[-1]}"
 
     # Check if camera instance for this device path already exists
-    for camera in camera_instances:
-        if camera.camera_index == normalized_device_path:  # Use camera_index instead of device_path
-            print(f"Reusing existing camera instance for {normalized_device_path}")
-            return StreamingHttpResponse(gen(camera),
-                                         content_type='multipart/x-mixed-replace; boundary=frame')
+    for i, camera in enumerate(camera_instances):
+        if camera.camera_index == normalized_device_path:
+            # Check if the camera instance is still valid (executor not shut down)
+            try:
+                # Test if we can read a frame - if video is None or executor shut down, recreate
+                if camera.video is None or not camera.video.isOpened():
+                    raise RuntimeError("Camera video capture is invalid")
+                print(f"Reusing existing camera instance for {normalized_device_path}")
+                return StreamingHttpResponse(gen(camera),
+                                             content_type='multipart/x-mixed-replace; boundary=frame')
+            except (RuntimeError, Exception) as e:
+                print(f"Camera instance for {normalized_device_path} is stale ({e}), recreating...")
+                camera_instances.pop(i)
+                break
 
-    # If not found, create and cache a new camera instance
+    # If not found or stale, create and cache a new camera instance
     print(f"Creating new camera instance for {normalized_device_path}")
     camera = VideoCamera(camera_index=normalized_device_path, request=request)
     if camera.video is None or not camera.video.isOpened():
@@ -228,7 +247,14 @@ def index(request):
         if camera:  # Only add if initialization was successful
             initialized_cameras.append(device_path)
 
-    return render(request, 'camera/index.html', {'camera_devices': initialized_cameras})
+    context = {'camera_devices': initialized_cameras}
+
+    # Show welcome message after registration
+    welcome_user = request.GET.get('welcome')
+    if welcome_user:
+        context['welcome_message'] = f'Welcome, {welcome_user}! Your account has been created and you are now logged in.'
+
+    return render(request, 'camera/index.html', context)
 
 def camera_view(request, device_path):
     """
@@ -251,17 +277,47 @@ def camera_view(request, device_path):
 @login_required
 def list_faces(request):
     """
-    Lists all untagged faces.
+    Lists faces with pagination and filtering.
+
+    Query params:
+        filter: 'all', 'tagged', 'untagged' (default: 'all')
+        page: page number (default: 1)
 
     Args:
         request (HttpRequest): The HTTP request object.
 
     Returns:
-        HttpResponse: The rendered list_faces page with untagged faces.
+        HttpResponse: The rendered list_faces page with paginated faces.
     """
     reconcile_faces()  # Reconcile the database with the actual images
-    faces = Face.objects.filter(tagged=False)
-    return render(request, 'camera/list_faces.html', {'faces': faces})
+
+    # Filter logic
+    filter_param = request.GET.get('filter', 'all')
+    if filter_param == 'tagged':
+        faces_qs = Face.objects.filter(tagged=True).order_by('-timestamp')
+    elif filter_param == 'untagged':
+        faces_qs = Face.objects.filter(tagged=False).order_by('-timestamp')
+    else:
+        faces_qs = Face.objects.all().order_by('-timestamp')
+
+    # Counts for filter badges
+    total_count = Face.objects.count()
+    tagged_count = Face.objects.filter(tagged=True).count()
+    untagged_count = Face.objects.filter(tagged=False).count()
+
+    # Pagination (20 per page)
+    paginator = Paginator(faces_qs, 20)
+    page_number = request.GET.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+
+    return render(request, 'camera/list_faces.html', {
+        'faces': page_obj,
+        'page_obj': page_obj,
+        'current_filter': filter_param,
+        'total_count': total_count,
+        'tagged_count': tagged_count,
+        'untagged_count': untagged_count,
+    })
 
 @login_required
 def tag_face(request, face_id):
@@ -289,7 +345,28 @@ def tag_face(request, face_id):
             os.rename(face.image.path, new_path)
             face.image.name = os.path.join('known_faces', os.path.basename(new_path))
             face.tagged = True
+            
+            # Compute and store embedding for the tagged face
+            try:
+                from .facial_recognition import FacialRecognition
+                fr = FacialRecognition()
+                img = cv2.imread(new_path)
+                if img is not None:
+                    boxes, probs, face_tensors = fr._detect_faces(img)
+                    if len(face_tensors) > 0:
+                        features = fr._extract_features(face_tensors[0])
+                        if features is not None:
+                            import numpy as np
+                            face.embedding = features.astype(np.float32).tobytes()
+                            print(f"Computed and stored embedding for {face.name}")
+            except Exception as e:
+                print(f"Error computing embedding: {e}")
+            
             face.save()
+            
+            # Reload known faces in all active camera instances
+            reload_all_known_faces()
+            
             return redirect('list_faces')
     else:
         form = TagFaceForm(instance=face)
@@ -323,7 +400,7 @@ def register(request):
         if form.is_valid():
             user = form.save()
             login(request, user)
-            return redirect('index')
+            return redirect(f'/?welcome={user.username}')
     else:
         form = CustomUserCreationForm()
     return render(request, 'camera/register.html', {'form': form})
@@ -351,11 +428,19 @@ def upload_face(request):
             if image is None:
                 form.add_error('image', 'Image not valid. Please upload a valid image file.')
             else:
-                # Detect and crop the face
-                detector = MTCNN()
-                faces = detector.detect_faces(image)
-                if faces:
-                    x, y, width, height = faces[0]['box']
+                # Detect and crop the face using PyTorch MTCNN
+                device = get_device()
+                detector = MTCNN(keep_all=False, device=device)
+                
+                # Convert BGR to RGB for MTCNN
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                boxes, probs = detector.detect(rgb_image)
+                
+                if boxes is not None and len(boxes) > 0:
+                    # Get the first face bounding box [x1, y1, x2, y2]
+                    x1, y1, x2, y2 = [int(coord) for coord in boxes[0]]
+                    width, height = x2 - x1, y2 - y1
+                    x, y = x1, y1
                     cropped_face = image[y:y + height, x:x + width]
 
                     # Ensure the known_faces directory exists
@@ -378,7 +463,28 @@ def upload_face(request):
                     # Update face image path and save the record
                     face.image.name = os.path.join('known_faces', filename)
                     face.tagged = True
+                    
+                    # Compute and store embedding
+                    try:
+                        from .facial_recognition import FacialRecognition
+                        from facenet_pytorch import InceptionResnetV1
+                        
+                        fr = FacialRecognition()
+                        img = cv2.imread(cropped_path)
+                        if img is not None:
+                            boxes_fr, probs_fr, face_tensors = fr._detect_faces(img)
+                            if len(face_tensors) > 0:
+                                features = fr._extract_features(face_tensors[0])
+                                if features is not None:
+                                    face.embedding = features.astype(np.float32).tobytes()
+                                    print(f"Computed and stored embedding for {face.name}")
+                    except Exception as e:
+                        print(f"Error computing embedding: {e}")
+                    
                     face.save()
+                    
+                    # Reload known faces in all active camera instances
+                    reload_all_known_faces()
 
                     return redirect('list_faces')
                 else:
@@ -435,6 +541,37 @@ def user_settings(request):
     else:
         form = UserSettingsForm(instance=request.user)
     return render(request, 'camera/user_settings.html', {'form': form})
+
+@login_required
+def recognition_settings(request):
+    """
+    Handles the update of face recognition settings (similarity threshold).
+
+    Args:
+        request (HttpRequest): The HTTP request object.
+
+    Returns:
+        HttpResponse: The rendered recognition_settings page with the form.
+    """
+    settings_obj = RecognitionSettings.get_settings()
+    
+    if request.method == 'POST':
+        form = RecognitionSettingsForm(request.POST, instance=settings_obj)
+        if form.is_valid():
+            form.save()
+            # Reload known faces to apply new threshold
+            reload_all_known_faces()
+            return redirect('recognition_settings')
+    else:
+        form = RecognitionSettingsForm(instance=settings_obj)
+    
+    # Get current known faces count
+    known_faces_count = Face.objects.filter(tagged=True).count()
+    
+    return render(request, 'camera/recognition_settings.html', {
+        'form': form,
+        'known_faces_count': known_faces_count
+    })
 
 @login_required
 def delete_all_faces(request):
